@@ -1,0 +1,4 @@
+* text=auto
+BACKEND/** -whitespace
+FRONTEND/** -whitespace
+*.sh text eol=lf

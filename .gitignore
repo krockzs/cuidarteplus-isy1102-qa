@@ -1,0 +1,21 @@
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+**/node_modules/
+**/dist/
+**/.cache/
+QA/reportes/
+QA/evidencias/
+coverage/
+*.log
+BACKEND/uploads/**
+!BACKEND/uploads/.gitkeep
+!BACKEND/uploads/documentos/.gitkeep
+!BACKEND/uploads/contracts/.gitkeep
+.DS_Store
+
+# Procesos locales del laboratorio
+.run/

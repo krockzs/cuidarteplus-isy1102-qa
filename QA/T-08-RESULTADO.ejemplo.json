@@ -1,0 +1,6 @@
+{
+  "caso": "T-08",
+  "estado": "PENDIENTE",
+  "observacion": "Completar tras verificar el Centro de Ayuda y el buscador en Firefox",
+  "evidencia": ["T-08/ayuda.png", "T-08/buscador.png"]
+}
