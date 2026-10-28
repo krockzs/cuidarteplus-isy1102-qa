@@ -21,6 +21,7 @@ code=${PIPESTATUS[0]}
 set -e
 if [[ ! -s reportes/jest-resultados.json ]]; then echo '[ERROR] Jest no generó JSON. Revisa reportes/jest-consola.txt'; exit 2; fi
 node scripts/generar-reporte.js
+node scripts/reporte-extendido.js
 node - <<'JS'
 const r=require('./reportes/jest-resultados.json');
 console.log(`Pruebas: ${r.numTotalTests} | Aprobadas: ${r.numPassedTests} | Fallidas: ${r.numFailedTests}`);

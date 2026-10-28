@@ -1,0 +1,34 @@
+CUIDARTE+ ISY1102 — SONARQUBE 26.10 NATIVO (SIN DOCKER)
+
+REQUISITOS: NEEBLES OS Debian 13 amd64, conexión a Internet, sudo,
+proyecto en ~/Downloads/cuidarteplus-isy1102-qa.
+
+1. Ejecutar: bash ~/Downloads/cuidarte-sonarqube-nativo/01-instalar.sh
+   Instala OpenJDK 21, descarga la distribución oficial y crea
+   el servicio systemd nativo cuidarte-sonarqube.service.
+   Utiliza base H2 interna SOLAMENTE para demostración académica.
+   Acceso limitado a http://127.0.0.1:9000.
+
+2. Abrir http://127.0.0.1:9000
+   Primer acceso: admin / admin.
+   Cambiar contraseña obligatoriamente y crear token desde
+   My Account > Security > Generate Tokens, tipo User Token.
+   Guardar el token solo temporalmente. NO SUBIR A GITHUB.
+
+3. Ejecutar: bash ~/Downloads/cuidarte-sonarqube-nativo/02-analizar.sh
+   Pegar el token cuando lo solicite. No aparece en terminal.
+   El escáner se instala en QA/reportes/sonarqube/tools (ignorado por Git).
+   Se analizan BACKEND/src y FRONTEND/src sin modificar archivos originales.
+
+4. Ejecutar: bash ~/Downloads/cuidarte-sonarqube-nativo/03-empaquetar.sh
+   Adjuntar el ZIP de evidencias para revisar hallazgos reales.
+
+Controles:
+  sudo systemctl status cuidarte-sonarqube.service --no-pager
+  sudo journalctl -u cuidarte-sonarqube.service -n 80 --no-pager
+  sudo systemctl stop cuidarte-sonarqube.service
+  sudo systemctl start cuidarte-sonarqube.service
+
+El ZIP de distribución oficial desde SonarSource se instala en /opt/cuidarte-sonarqube.
+No hay contenedores, ni se alteran bases ni servicios PostgreSQL del laboratorio.
+No ejecutar instaladores mientras otra instancia ocupe el puerto 9000.
