@@ -19,3 +19,6 @@ BACKEND/uploads/**
 
 # Procesos locales del laboratorio
 .run/
+
+# Se conserva localmente, nunca en repositorios publicos
+/BACKEND/sql/dump-cuidarteplus.sql

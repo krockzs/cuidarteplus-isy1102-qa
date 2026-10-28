@@ -46,7 +46,7 @@ SELECT format('CREATE DATABASE %I OWNER %I', :'qa_db', :'qa_user') \gexec
 SQL
   echo '[OK] Rol y base exclusivos creados.'
   PGPASSWORD="$POSTGRES_PASSWORD" psql -X -h 127.0.0.1 -p "$PORT_POSTGRES" -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
-    -v ON_ERROR_STOP=1 -f BACKEND/sql/dump-cuidarteplus.sql > QA/reportes/postgresql-inicializacion.txt
+    -v ON_ERROR_STOP=1 -f QA/fixtures/laboratorio.sql > QA/reportes/postgresql-inicializacion.txt
 fi
 PGPASSWORD="$POSTGRES_PASSWORD" psql -X -tA -h 127.0.0.1 -p "$PORT_POSTGRES" -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
   -v ON_ERROR_STOP=1 -c 'SELECT etiqueta FROM qa_lab_marker WHERE id=1' | grep -qx 'CUIDARTE_QA_PUBLIC_20261028' || { echo '[ERROR] Marcador QA inválido'; exit 2; }
@@ -70,7 +70,7 @@ for service in backend frontend; do
         if curl --silent --max-time 2 --fail "http://127.0.0.1:${PORT_BACKEND}/" >/dev/null; then echo '[ERROR] Puerto backend ocupado por un proceso no administrado.'; exit 2; fi
         (
           cd "$ROOT/BACKEND"
-          nohup env DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${PORT_POSTGRES}/${POSTGRES_DB}" JWT_SECRET="$JWT_SECRET" PORT="$PORT_BACKEND" node src/app.js > "$ROOT/QA/reportes/backend.log" 2>&1 < /dev/null &
+          nohup env DATABASE_URL="postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@127.0.0.1:${PORT_POSTGRES}/${POSTGRES_DB}" JWT_SECRET="$JWT_SECRET" PORT="$PORT_BACKEND" node --require "$ROOT/QA/helpers/escucha-local.cjs" src/app.js > "$ROOT/QA/reportes/backend.log" 2>&1 < /dev/null &
           echo $! > "$ROOT/.run/backend.pid"
         )
       ;;

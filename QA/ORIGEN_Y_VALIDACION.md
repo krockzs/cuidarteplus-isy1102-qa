@@ -1,11 +1,10 @@
-# Procedencia y validación del laboratorio
+# Procedencia y preservación del código original
 
-- ZIP de origen: `CodigoFuenteB(5).zip`
-- SHA-256 del ZIP original: `b331e9298315c0528014898a5c74ea1782def0eb1dbb3cfc10c1f87a4c99b60e`
-- La implementación original del backend se conserva, salvo el enlace de escucha de `app.js` limitado a `127.0.0.1` para que la API vulnerable no quede expuesta en la red.
-- No se modificaron las implementaciones deliberadamente vulnerables de las rutas.
-- Se sustituyó el volcado de datos inicial por registros ficticios de QA.
-- Se eliminaron todos los `.env` originales. Las credenciales reales nunca forman parte de esta entrega.
-- Se reemplazó el método de ejecución por PostgreSQL, Node y Vite nativos. Se retiraron archivos y scripts exclusivos de Docker. La base se inicializa de forma controlada solo si no existe; la API escucha exclusivamente en loopback.
-- Validación efectuada en entorno de preparación: sintaxis Node de backend (18/18) y suite QA, Bash (scripts).
-- **No se han ejecutado pruebas contra un servidor Cuidarte+ real** en este entorno, porque no hay servicios nativos ni servicio PostgreSQL disponible; el Ryzen debe ejecutar la suite para producir resultados reales.
+- Origen: `CodigoFuenteB(5).zip`, del material ISY1102.
+- `BACKEND/src/app.js` es idéntico byte por byte al archivo original.
+- Ningún archivo dentro de `BACKEND/src/` o `FRONTEND/src/` se altera para las pruebas.
+- `BACKEND/sql/dump-cuidarteplus.sql` se preserva idéntico al original únicamente en el disco local, excluido de GitHub debido a registros clínicos de muestra y contraseñas débiles.
+- `QA/fixtures/laboratorio.sql` contiene el esquema y datos sintéticos de laboratorio. Es material QA, no el dump original.
+- `QA/helpers/escucha-local.cjs` restringe el HTTP a `127.0.0.1` exclusivamente en ejecución; no se modifica Express.
+- Los scripts usan PostgreSQL y Node.js nativos, sin Docker; los secretos de `.env` se generan localmente.
+- Los resultados funcionales deben medirse en el Ryzen; no hay pruebas ejecutadas por este parche.

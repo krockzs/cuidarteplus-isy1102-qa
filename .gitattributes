@@ -2,3 +2,6 @@
 BACKEND/** -whitespace
 FRONTEND/** -whitespace
 *.sh text eol=lf
+
+# Preservar bytes exactos del codigo original
+BACKEND/src/app.js -text

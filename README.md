@@ -7,7 +7,7 @@ Esta es una aplicación **intencionalmente vulnerable**, destinada exclusivament
 - Backend: Node.js + Express; `http://127.0.0.1:4444/` y `/docs`.
 - Base de datos: PostgreSQL **nativo**; `127.0.0.1:5432`, base exclusiva `cuidarteplus_qa`.
 - Suite: Jest + `pg`, ocho pruebas automatizadas (T-01..T-07, T-09); T-08 es manual.
-- Se conservan las vulnerabilidades de la aplicación. El backend solo se limita a `127.0.0.1` para no exponer el laboratorio.
+- Se conserva el código fuente original de Express y React. La escucha en `127.0.0.1` se aplica mediante una precarga de QA sin cambiar `BACKEND/src/app.js`. El volcado SQL original se conserva solo en local, mientras que las pruebas usan `QA/fixtures/laboratorio.sql`.
 
 ## En NEEBLES OS / Ryzen (Debian)
 Descomprime en `~/Downloads`, entra en la carpeta del proyecto y ejecuta **en orden**:
