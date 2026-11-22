@@ -47,8 +47,6 @@ jobs:
       QA_ALLOW_MUTATIONS: 'YES'
       JWT_SECRET: ep5_34_sintetico_no_produccion
       PORT: '4444'
-      EP5_JMETER_HOME: ${{ runner.temp }}/apache-jmeter-5.6.3
-      EP5_API_PID_FILE: ${{ runner.temp }}/ep5-34-api.pid
     steps:
       - name: Descargar codigo de QA
         uses: actions/checkout@v4
@@ -76,6 +74,8 @@ jobs:
             sudo apt-get install -y -qq postgresql-client
           fi
           python3 --version
+          echo "EP5_JMETER_HOME=$RUNNER_TEMP/apache-jmeter-5.6.3" >> "$GITHUB_ENV"
+          echo "EP5_API_PID_FILE=$RUNNER_TEMP/ep5-34-api.pid" >> "$GITHUB_ENV"
           mkdir -p QA/reportes/ep5-34
 
       - name: Descargar JMeter 5.6.3 y verificar SHA512
