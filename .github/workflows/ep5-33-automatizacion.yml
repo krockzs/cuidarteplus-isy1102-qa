@@ -1,0 +1,230 @@
+# EP5 IL 3.3 - Ejecucion real de pruebas automatizadas.
+# SOLO laboratorio de datos sinteticos; nunca despliegue publico.
+name: EP5 3.3 - Jest Selenium JMeter
+
+on:
+  push:
+    branches:
+      - 'ep5/**'
+      - main
+    paths:
+      - 'QA/**'
+      - '.github/workflows/ep5-33-automatizacion.yml'
+  pull_request:
+    paths:
+      - 'QA/**'
+      - '.github/workflows/ep5-33-automatizacion.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pruebas-automatizadas:
+    name: Jest + Selenium + JMeter en laboratorio QA
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: cuidarte_qa_app
+          POSTGRES_PASSWORD: qa_ep5_ci_sintetico
+          POSTGRES_DB: cuidarteplus_qa
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cuidarte_qa_app -d cuidarteplus_qa"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      POSTGRES_USER: cuidarte_qa_app
+      POSTGRES_PASSWORD: qa_ep5_ci_sintetico
+      POSTGRES_DB: cuidarteplus_qa
+      DATABASE_URL: postgres://cuidarte_qa_app:qa_ep5_ci_sintetico@127.0.0.1:5432/cuidarteplus_qa
+      QA_DATABASE_URL: postgres://cuidarte_qa_app:qa_ep5_ci_sintetico@127.0.0.1:5432/cuidarteplus_qa
+      QA_ALLOW_MUTATIONS: 'YES'
+      QA_API_URL: http://127.0.0.1:4444
+      JWT_SECRET: ci_ep5_sintetico_no_usar_en_produccion
+      PORT: '4444'
+      VITE_API_URL: http://127.0.0.1:4444
+      EP5_FRONTEND_URL: http://127.0.0.1:3333
+      EP5_QA_USER: qa_admin
+      EP5_QA_PASSWORD: demo_admin_qa
+      EP5_SCREENSHOTS: QA/reportes/ep5-33/screenshots
+      EP5_P95_MAX_MS: '2000'
+    steps:
+      - name: Descargar Cuidarte+ sin modificar su codigo
+        uses: actions/checkout@v4
+
+      - name: Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            BACKEND/package-lock.json
+            FRONTEND/package-lock.json
+            QA/package-lock.json
+
+      - name: Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Java 17 para JMeter
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Instalar herramientas y dependencias reproducibles
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci --prefix BACKEND --no-audit --no-fund
+          npm ci --prefix FRONTEND --no-audit --no-fund
+          npm ci --prefix QA --no-audit --no-fund
+          python -m pip install --disable-pip-version-check selenium pytest
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq postgresql-client
+          fi
+          mkdir -p QA/reportes/ep5-33/screenshots
+          echo "Node: $(node --version); Python: $(python --version)"
+          echo "Chrome: $(google-chrome --version || true)"
+
+      - name: Inicializar solo datos QA sintéticos
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          PGPASSWORD="$POSTGRES_PASSWORD" psql -X -w -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+            -f QA/fixtures/laboratorio.sql >/dev/null
+          MARKER="$(PGPASSWORD="$POSTGRES_PASSWORD" psql -X -w -At -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+            -c 'SELECT etiqueta FROM qa_lab_marker WHERE id=1')"
+          test "$MARKER" = 'CUIDARTE_QA_PUBLIC_20261028'
+          echo "[OK] PostgreSQL efímero exclusivamente de QA"
+
+      - name: Iniciar backend y frontend locales
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          nohup node --require "$GITHUB_WORKSPACE/QA/helpers/escucha-local.cjs" \
+            "$GITHUB_WORKSPACE/BACKEND/src/app.js" \
+            > "$RUNNER_TEMP/ep5-api.log" 2>&1 </dev/null &
+          (cd FRONTEND && nohup npm run dev -- --host 127.0.0.1 --port 3333 --strictPort \
+            > "$RUNNER_TEMP/ep5-vite.log" 2>&1 </dev/null &)
+          for i in $(seq 1 35); do
+            if curl -fsS --noproxy '*' --max-time 2 http://127.0.0.1:4444/ \
+                | grep -q '"cuidarteplus"' \
+                && curl -fsS --noproxy '*' --max-time 2 http://127.0.0.1:3333/login \
+                | grep -q 'html'; then
+              echo "[OK] API 4444 y React 3333 en loopback"
+              exit 0
+            fi
+            sleep 1
+          done
+          tail -n 30 "$RUNNER_TEMP/ep5-api.log" || true
+          tail -n 30 "$RUNNER_TEMP/ep5-vite.log" || true
+          exit 2
+
+      - name: Selenium - 6 pruebas de navegador Chrome
+        id: selenium
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python -m pytest -q QA/selenium/test_ui.py \
+            --junitxml=QA/reportes/ep5-33/selenium-junit.xml \
+            -rA 2>&1 | tee QA/reportes/ep5-33/selenium-consola.log
+
+      - name: Descargar JMeter 5.6.3 oficial con verificacion SHA512
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          FILE="$RUNNER_TEMP/apache-jmeter-5.6.3.tgz"
+          BASE="https://downloads.apache.org/jmeter/binaries"
+          curl -fsSL --retry 3 -o "$FILE" "$BASE/apache-jmeter-5.6.3.tgz"
+          curl -fsSL --retry 3 -o "$FILE.sha512" "$BASE/apache-jmeter-5.6.3.tgz.sha512"
+          (cd "$RUNNER_TEMP" && sha512sum -c apache-jmeter-5.6.3.tgz.sha512)
+          tar -xzf "$FILE" -C "$RUNNER_TEMP"
+          "$RUNNER_TEMP/apache-jmeter-5.6.3/bin/jmeter" --version | head -n 12
+
+      - name: JMeter - carga controlada de API sintetica
+        id: jmeter
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          "$RUNNER_TEMP/apache-jmeter-5.6.3/bin/jmeter" -n \
+            -t QA/jmeter/cuidarte-ep5-33.jmx \
+            -l QA/reportes/ep5-33/jmeter.jtl \
+            -e -o QA/reportes/ep5-33/jmeter-html \
+            > QA/reportes/ep5-33/jmeter-consola.log 2>&1
+          tail -n 30 QA/reportes/ep5-33/jmeter-consola.log
+
+      - name: JMeter - medir p95, promedio y tasa de error
+        id: rendimiento
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python QA/jmeter/resumir_jtl.py \
+            QA/reportes/ep5-33/jmeter.jtl \
+            QA/reportes/ep5-33/jmeter-resumen.json \
+            | tee QA/reportes/ep5-33/jmeter-resumen.txt
+
+      - name: Jest - suite de 113 pruebas API e integracion
+        id: jest
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p QA/reportes/ep5-33
+          cd QA
+          set +e
+          npm run test:json -- --colors=false > reportes/ep5-33/jest-consola.log 2>&1
+          RC=$?
+          set -e
+          node - <<'JS' | tee reportes/ep5-33/jest-resumen.txt
+          const fs = require('node:fs');
+          const p = 'reportes/jest-resultados.json';
+          if (!fs.existsSync(p)) { console.log('ERROR: JSON Jest no generado'); process.exit(2); }
+          const d = JSON.parse(fs.readFileSync(p,'utf8'));
+          console.log('Jest: '+d.numTotalTests+' pruebas, '+d.numPassedTests+' PASS, '+d.numFailedTests+' FAIL');
+          JS
+          cat reportes/ep5-33/jest-resumen.txt >> "$GITHUB_STEP_SUMMARY"
+          exit "$RC"
+
+      - name: Guardar todas las evidencias aunque existan FAIL
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ep5-33-jest-selenium-jmeter-evidencias
+          path: |
+            QA/reportes/jest-resultados.json
+            QA/reportes/ep5-33/
+          if-no-files-found: warn
+          retention-days: 21
+
+      - name: Certificacion final - fallos NO se ocultan
+        if: always()
+        shell: bash
+        env:
+          SELENIUM_RESULT: ${{ steps.selenium.outcome }}
+          JMETER_RESULT: ${{ steps.jmeter.outcome }}
+          P95_RESULT: ${{ steps.rendimiento.outcome }}
+          JEST_RESULT: ${{ steps.jest.outcome }}
+        run: |
+          echo "### CI EP5 3.3 - Resultado" >> "$GITHUB_STEP_SUMMARY"
+          echo "Selenium: $SELENIUM_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          echo "JMeter ejecucion: $JMETER_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          echo "JMeter criterio p95: $P95_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          echo "Jest: $JEST_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          test "$SELENIUM_RESULT" = success &&
+            test "$JMETER_RESULT" = success &&
+            test "$P95_RESULT" = success &&
+            test "$JEST_RESULT" = success
