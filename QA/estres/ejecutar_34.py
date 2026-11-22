@@ -324,7 +324,17 @@ def main():
     print(f"LABORATORIO VERIFICADO: {MARKER}", flush=True)
     # El backup se realiza antes de la presión de carga; restauración en DB aparte.
     backup = OUT / "respaldo-qa-temporal.dump"
-    run(["pg_dump", *pg_args(), "-Fc", "-f", str(backup)], timeout=60)
+    # pg_dump del runner puede ser 16; ejecutar pg_dump 17 DENTRO del contenedor Postgres 17.
+    docker_ps = run(["docker", "ps", "-q", "--filter", "ancestor=postgres:17"], timeout=10).strip().splitlines()
+    if len(docker_ps) != 1:
+        raise RuntimeError("Se exige exactamente un contenedor postgres:17 del laboratorio")
+    pg_container = docker_ps[0]
+    docker_base = ["docker", "exec", "-e", "PGPASSWORD=" + ENV["POSTGRES_PASSWORD"], pg_container]
+    with backup.open("wb") as fd:
+        dump = subprocess.run(docker_base + ["pg_dump", "-U", ENV["POSTGRES_USER"], "-d", DB, "-Fc"],
+                              env=ENV, stdout=fd, stderr=subprocess.PIPE, timeout=75, check=False)
+    if dump.returncode:
+        raise RuntimeError("pg_dump 17 en contenedor: " + dump.stderr.decode(errors="replace")[-400:])
     (OUT/"respaldo-qa-temporal.sha256").write_text(
         hashlib.sha256(backup.read_bytes()).hexdigest()+"\n")
     complete = run_stages(int(API_PID_FILE.read_text().strip()))
@@ -338,8 +348,14 @@ def main():
     # Restauración técnica contra una base separada, jamás sobre la base de origen.
     run(["createdb", "-h", "127.0.0.1", "-p", "5432", "-U", ENV["POSTGRES_USER"], RESTORED_DB])
     t0 = time.monotonic()
-    run(["pg_restore", *pg_args(RESTORED_DB), "--no-owner", "--no-privileges",
-         str(backup)], timeout=90)
+    with backup.open("rb") as fd:
+        restore = subprocess.run(
+            ["docker", "exec", "-i", "-e", "PGPASSWORD=" + ENV["POSTGRES_PASSWORD"], pg_container,
+             "pg_restore", "-U", ENV["POSTGRES_USER"], "-d", RESTORED_DB,
+             "--no-owner", "--no-privileges"],
+            env=ENV, stdin=fd, stderr=subprocess.PIPE, timeout=90, check=False)
+    if restore.returncode:
+        raise RuntimeError("pg_restore 17 en contenedor: " + restore.stderr.decode(errors="replace")[-400:])
     restored = snapshot(RESTORED_DB)
     restore_ms = round((time.monotonic()-t0)*1000, 2)
     REPORT["integridad"]["restauracion_verificada"] = before == restored
