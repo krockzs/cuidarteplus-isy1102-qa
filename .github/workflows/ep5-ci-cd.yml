@@ -1,0 +1,238 @@
+# EP5 / IL 3.2: pipeline real para el laboratorio Cuidarte+.
+# Nunca desplegar la aplicación intencionalmente vulnerable a producción.
+name: EP5 CI-CD - Seguridad y calidad
+
+on:
+  push:
+    branches:
+      - main
+      - 'ep5/**'
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  frontend-build:
+    name: Compilacion React
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Descargar codigo del repositorio
+        uses: actions/checkout@v4
+      - name: Preparar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: FRONTEND/package-lock.json
+      - name: Instalar dependencias bloqueadas
+        run: npm ci --prefix FRONTEND --no-audit --no-fund
+      - name: Compilar frontend
+        run: npm run build --prefix FRONTEND
+      - name: Guardar build de laboratorio (no aprobado para despliegue)
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontend-build-sin-aprobacion
+          path: FRONTEND/dist/
+          if-no-files-found: error
+          retention-days: 14
+
+  qa-jest:
+    name: PostgreSQL sintetico + Jest
+    runs-on: ubuntu-24.04
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: cuidarte_qa_app
+          POSTGRES_PASSWORD: qa_ep5_ci_sintetico
+          POSTGRES_DB: cuidarteplus_qa
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cuidarte_qa_app -d cuidarteplus_qa"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      POSTGRES_USER: cuidarte_qa_app
+      POSTGRES_PASSWORD: qa_ep5_ci_sintetico
+      POSTGRES_DB: cuidarteplus_qa
+      DATABASE_URL: postgres://cuidarte_qa_app:qa_ep5_ci_sintetico@127.0.0.1:5432/cuidarteplus_qa
+      QA_DATABASE_URL: postgres://cuidarte_qa_app:qa_ep5_ci_sintetico@127.0.0.1:5432/cuidarteplus_qa
+      QA_ALLOW_MUTATIONS: 'YES'
+      QA_API_URL: http://127.0.0.1:4444
+      JWT_SECRET: ci_ep5_datos_exclusivamente_sinteticos_no_produccion
+      PORT: '4444'
+    steps:
+      - name: Descargar codigo del repositorio
+        uses: actions/checkout@v4
+      - name: Preparar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: |
+            BACKEND/package-lock.json
+            QA/package-lock.json
+      - name: Instalar cliente PostgreSQL cuando falte
+        shell: bash
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq postgresql-client
+          fi
+      - name: Instalar dependencias del backend y la suite QA
+        run: |
+          npm ci --prefix BACKEND --no-audit --no-fund
+          npm ci --prefix QA --no-audit --no-fund
+      - name: Cargar exclusivamente fixtures sintéticos y validar marcador
+        shell: bash
+        run: |
+          PGPASSWORD="$POSTGRES_PASSWORD" psql -X -w -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+            -f QA/fixtures/laboratorio.sql >/dev/null
+          MARKER="$(PGPASSWORD="$POSTGRES_PASSWORD" psql -X -w -At -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+            -c 'SELECT etiqueta FROM qa_lab_marker WHERE id=1')"
+          test "$MARKER" = CUIDARTE_QA_PUBLIC_20261028
+          echo "[OK] Base de datos efímera con marcador de laboratorio"
+      - name: Iniciar API local aislada
+        shell: bash
+        run: |
+          nohup node --require "$GITHUB_WORKSPACE/QA/helpers/escucha-local.cjs" \
+            "$GITHUB_WORKSPACE/BACKEND/src/app.js" \
+            > "$RUNNER_TEMP/cuidarte-backend.log" 2>&1 </dev/null &
+          for i in $(seq 1 30); do
+            if curl --noproxy '*' -fsS --max-time 3 http://127.0.0.1:4444/ \
+              | grep -q '"cuidarteplus"'; then
+              echo "[OK] API local operativa"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "[ERROR] Backend no disponible"
+          tail -n 40 "$RUNNER_TEMP/cuidarte-backend.log"
+          exit 2
+      - name: Ejecutar pruebas Jest sin ocultar incumplimientos
+        shell: bash
+        run: |
+          mkdir -p QA/reportes
+          set +e
+          (cd QA && npm run test:json -- --colors=false) \
+            > QA/reportes/ci-jest.log 2>&1
+          RESULTADO=$?
+          set -e
+          echo "### Jest — resultado real" >> "$GITHUB_STEP_SUMMARY"
+          if test -s QA/reportes/jest-resultados.json; then
+            node - <<'JS' >> "$GITHUB_STEP_SUMMARY"
+          const fs=require('node:fs');
+          const r=JSON.parse(fs.readFileSync('QA/reportes/jest-resultados.json','utf8'));
+          console.log('Total: '+r.numTotalTests+'; PASS: '+r.numPassedTests+'; FAIL: '+r.numFailedTests);
+          console.log('Los FAIL son defectos registrados y deben bloquear la promoción.');
+          JS
+          else
+            echo "No se pudo generar el JSON de Jest." >> "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "Jest terminó con código $RESULTADO"
+          test "$RESULTADO" -eq 0
+      - name: Conservar evidencias aunque existan pruebas reprobadas
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidencia-jest-ep5
+          path: |
+            QA/reportes/jest-resultados.json
+            QA/reportes/ci-jest.log
+          if-no-files-found: warn
+          retention-days: 14
+
+  dependency-audit:
+    name: Auditoria npm de dependencias
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Descargar codigo del repositorio
+        uses: actions/checkout@v4
+      - name: Preparar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Comprobar vulnerabilidades altas y criticas
+        shell: bash
+        run: |
+          mkdir -p evidencias-ep5
+          FALLA=0
+          echo "### Auditoría de dependencias" >> "$GITHUB_STEP_SUMMARY"
+          for DIR in BACKEND FRONTEND QA; do
+            RC=0
+            (cd "$DIR" && npm audit --omit=dev --audit-level=high --json) \
+              > "evidencias-ep5/audit-$DIR.json" 2>&1 || RC=$?
+            node - "evidencias-ep5/audit-$DIR.json" "$DIR" <<'JS' >> "$GITHUB_STEP_SUMMARY"
+          const fs=require('node:fs');
+          const file=process.argv[2],name=process.argv[3];
+          try {
+            const obj=JSON.parse(fs.readFileSync(file,'utf8'));
+            const v=obj.metadata?.vulnerabilities ?? {};
+            console.log(name+': '+JSON.stringify(v));
+          } catch {
+            console.log(name+': no se pudo parsear auditoría; revisar artefacto.');
+          }
+          JS
+            if test "$RC" -ne 0; then FALLA=1; fi
+          done
+          exit "$FALLA"
+      - name: Conservar auditorias como evidencia
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: evidencia-auditoria-npm
+          path: evidencias-ep5/
+          if-no-files-found: warn
+          retention-days: 14
+
+  codeql:
+    name: CodeQL - analisis estatico de seguridad
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - name: Descargar codigo del repositorio
+        uses: actions/checkout@v4
+      - name: Inicializar CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+      - name: Analizar JavaScript y TypeScript
+        uses: github/codeql-action/analyze@v3
+
+  delivery-candidate:
+    name: CD - promover artefacto candidato solo tras controles
+    needs:
+      - frontend-build
+      - qa-jest
+      - dependency-audit
+      - codeql
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Recuperar el build que supero la compuerta
+        uses: actions/download-artifact@v4
+        with:
+          name: frontend-build-sin-aprobacion
+          path: artefacto/
+      - name: Registrar entrega interna sin despliegue
+        run: |
+          echo "### Entrega interna habilitada" >> "$GITHUB_STEP_SUMMARY"
+          echo "Se aprobaron todos los controles. No se realiza despliegue público." >> "$GITHUB_STEP_SUMMARY"
+          test -s artefacto/index.html
+      - name: Publicar candidato para revision humana
+        uses: actions/upload-artifact@v4
+        with:
+          name: ep5-candidato-calidad-aprobada
+          path: artefacto/
+          if-no-files-found: error
+          retention-days: 14
