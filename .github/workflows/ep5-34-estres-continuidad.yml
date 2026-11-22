@@ -1,0 +1,158 @@
+# EP5 IL 3.4 / IE7: mantenimiento, estrés escalonado y recuperación.
+# NO ejecutar sobre infraestructura pública. Exclusivamente runners efímeros.
+name: EP5 3.4 - Estres resiliencia continuidad
+
+on:
+  push:
+    branches:
+      - main
+      - 'ep5/**'
+    paths:
+      - 'QA/estres/**'
+      - '.github/workflows/ep5-34-estres-continuidad.yml'
+  pull_request:
+    paths:
+      - 'QA/estres/**'
+      - '.github/workflows/ep5-34-estres-continuidad.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  resiliencia-qa:
+    name: JMeter progresivo + CPU RAM PostgreSQL + restauracion
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: cuidarte_qa_app
+          POSTGRES_PASSWORD: qa_ep5_ci_sintetico
+          POSTGRES_DB: cuidarteplus_qa
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U cuidarte_qa_app -d cuidarteplus_qa"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      POSTGRES_USER: cuidarte_qa_app
+      POSTGRES_PASSWORD: qa_ep5_ci_sintetico
+      POSTGRES_DB: cuidarteplus_qa
+      DATABASE_URL: postgres://cuidarte_qa_app:qa_ep5_ci_sintetico@127.0.0.1:5432/cuidarteplus_qa
+      QA_DATABASE_URL: postgres://cuidarte_qa_app:qa_ep5_ci_sintetico@127.0.0.1:5432/cuidarteplus_qa
+      QA_ALLOW_MUTATIONS: 'YES'
+      JWT_SECRET: ep5_34_sintetico_no_produccion
+      PORT: '4444'
+      EP5_JMETER_HOME: ${{ runner.temp }}/apache-jmeter-5.6.3
+      EP5_API_PID_FILE: ${{ runner.temp }}/ep5-34-api.pid
+    steps:
+      - name: Descargar codigo de QA
+        uses: actions/checkout@v4
+
+      - name: Preparar Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: BACKEND/package-lock.json
+
+      - name: Preparar Java 17 para JMeter
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Preparar backend y PostgreSQL cliente
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          npm ci --prefix BACKEND --no-audit --no-fund
+          if ! command -v psql >/dev/null 2>&1 || ! command -v pg_restore >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq postgresql-client
+          fi
+          python3 --version
+          mkdir -p QA/reportes/ep5-34
+
+      - name: Descargar JMeter 5.6.3 y verificar SHA512
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          BASE="https://downloads.apache.org/jmeter/binaries"
+          FILE="$RUNNER_TEMP/apache-jmeter-5.6.3.tgz"
+          curl -fsSL --retry 3 -o "$FILE" "$BASE/apache-jmeter-5.6.3.tgz"
+          curl -fsSL --retry 3 -o "$FILE.sha512" "$BASE/apache-jmeter-5.6.3.tgz.sha512"
+          (cd "$RUNNER_TEMP" && sha512sum -c apache-jmeter-5.6.3.tgz.sha512)
+          tar -xzf "$FILE" -C "$RUNNER_TEMP"
+
+      - name: Inicializar base QA y comprobar marcador
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          PGPASSWORD="$POSTGRES_PASSWORD" psql -X -w -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+            -f QA/fixtures/laboratorio.sql >/dev/null
+          MARKER="$(PGPASSWORD="$POSTGRES_PASSWORD" psql -X -w -At -v ON_ERROR_STOP=1 \
+            -h 127.0.0.1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" \
+            -c 'SELECT etiqueta FROM qa_lab_marker WHERE id=1')"
+          test "$MARKER" = 'CUIDARTE_QA_PUBLIC_20261028'
+          echo "[OK] QA efimera, marcador publico verificado"
+
+      - name: API Express restringida a 127.0.0.1
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          nohup node --require "$GITHUB_WORKSPACE/QA/helpers/escucha-local.cjs" \
+            "$GITHUB_WORKSPACE/BACKEND/src/app.js" \
+            > "$RUNNER_TEMP/ep5-34-api.log" 2>&1 </dev/null &
+          echo $! > "$EP5_API_PID_FILE"
+          for i in $(seq 1 35); do
+            if curl -fsS --noproxy '*' --max-time 2 http://127.0.0.1:4444/ \
+              | grep -q '"cuidarteplus"'; then
+              echo "[OK] API local disponible"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "[ERROR] API local no responde"
+          exit 2
+
+      - name: JMeter escalonado, telemetria, reinicio y recuperacion PostgreSQL
+        id: ensayo
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          python3 QA/estres/ejecutar_34.py 2>&1 \
+            | tee QA/reportes/ep5-34/ejecucion-consola.log
+
+      - name: Eliminar backup temporal antes de publicar evidencias
+        if: always()
+        shell: bash
+        run: |
+          rm -f QA/reportes/ep5-34/respaldo-qa-temporal.dump
+          echo "[OK] No se publica volcado PostgreSQL"
+
+      - name: Publicar mediciones, informe visual y registro de recuperacion
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ep5-34-estres-resiliencia-monitoreo
+          path: QA/reportes/ep5-34/
+          if-no-files-found: warn
+          retention-days: 21
+
+      - name: Puerta de mantenimiento - no ocultar incumplimientos
+        if: always()
+        shell: bash
+        env:
+          ENSAYO_RESULT: ${{ steps.ensayo.outcome }}
+        run: |
+          echo "### EP5 3.4 · Puerta de continuidad" >> "$GITHUB_STEP_SUMMARY"
+          echo "Resultado ensayo: $ENSAYO_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          echo "Un rendimiento inferior al criterio, errores o problemas de recuperacion bloquean la aprobacion." >> "$GITHUB_STEP_SUMMARY"
+          test "$ENSAYO_RESULT" = success
